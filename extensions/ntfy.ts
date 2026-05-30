@@ -12,7 +12,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 // ---------------------------------------------------------------------------
 // Config types & defaults
@@ -174,22 +174,53 @@ function isActive(): boolean {
 // Notification helper
 // ---------------------------------------------------------------------------
 
+interface NotifyMeta {
+	projectPath: string;
+	projectName: string;
+	sessionName: string;
+	sessionId: string;
+}
+
+function buildNotifyMeta(
+	cwd: string,
+	sessionFile: string | undefined,
+	sessionName: string | undefined,
+): NotifyMeta {
+	return {
+		projectPath: cwd,
+		projectName: basename(cwd) || cwd,
+		sessionName: sessionName || "(unnamed)",
+		sessionId: sessionFile
+			? basename(sessionFile).replace(/\.jsonl$/, "")
+			: "(ephemeral)",
+	};
+}
+
 interface NotifyParams {
 	seconds: number;
 	hasError: boolean;
 	signal?: AbortSignal;
+	meta: NotifyMeta;
 }
 
 async function sendNotification(params: NotifyParams): Promise<void> {
 	const cfg = runtimeCfg;
 	const url = `${cfg.server}/${encodeURIComponent(cfg.topic)}`;
 
-	const title = "Pi needs attention";
+	const title = params.meta.projectName;
 	const priority = params.hasError ? "5" : "4";
 	const tags = params.hasError ? "computer,warning" : "computer";
-	const body = params.hasError
-		? `Pi turn finished after ${params.seconds}s (with errors)`
-		: `Pi turn finished after ${params.seconds}s`;
+
+	const lines: string[] = [
+		`Path: ${params.meta.projectPath}`,
+		`Session: ${params.meta.sessionName}`,
+		`ID: ${params.meta.sessionId}`,
+		`Duration: ${params.seconds}s`,
+	];
+	if (params.hasError) {
+		lines.push("Status: errors detected");
+	}
+	const body = lines.join("\n");
 
 	const headers: Record<string, string> = {
 		Title: title,
@@ -427,6 +458,12 @@ export default function extension(pi: ExtensionAPI) {
 			}
 		}
 
-		await sendNotification({ seconds, hasError, signal: ctx.signal });
+		const meta = buildNotifyMeta(
+			ctx.cwd,
+			ctx.sessionManager.getSessionFile() ?? undefined,
+			pi.getSessionName() ?? undefined,
+		);
+
+		await sendNotification({ seconds, hasError, signal: ctx.signal, meta });
 	});
 }

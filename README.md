@@ -75,8 +75,15 @@ Use the `/ntfy` command to set these without editing the JSON file directly.
 ## Notification behavior
 
 - Sends a notification when `agent_end` fires **and** the turn lasted ≥ `minSeconds`
-- **Normal turn**: Priority 4, tags `computer`, title "Pi needs attention"
-- **Turn with errors**: Priority 5, tags `computer,warning`, title "Pi needs attention ⚠️"
+- **Title**: Project directory name (e.g. `pi-ntfy`) so you can instantly see which project needs attention
+- **Body** (multi-line):
+  - `Path` — Full working directory path
+  - `Session` — Session name set via `pi.setSessionName()`, or `(unnamed)` if not set
+  - `ID` — Session file basename without `.jsonl`, or `(ephemeral)` when no session file is active
+  - `Duration` — Turn wall-clock time in seconds
+  - `Status: errors detected` — Appended only when the turn contains at least one tool error
+- **Normal turn**: Priority 4, tags `computer`
+- **Turn with errors**: Priority 5, tags `computer,warning`
 - Notification failures (network errors, timeouts, HTTP errors) are logged via `console.warn` — pi continues normally
 - Fetch requests have a bounded timeout (`timeoutMs`) and respect `Ctrl+C` abort
 
