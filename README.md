@@ -1,8 +1,8 @@
 # pi-ntfy
 
-Send push notifications via [ntfy.sh](https://ntfy.sh) when [pi](https://pi.dev) agent finishes a turn and needs your attention.
+Send push notifications via [ntfy.sh](https://ntfy.sh) when [pi](https://pi.dev) finishes a turn and needs your attention. Useful when you step away from the terminal while pi is working on a long task — get a notification on your phone or desktop when it's done.
 
-Useful when you step away from the terminal while pi is working on a long task — you'll get a notification on your phone or desktop when it's done.
+Supports self-hosted ntfy servers, including those behind authentication (Basic username/password or Bearer token).
 
 ## Install
 
@@ -10,60 +10,82 @@ Useful when you step away from the terminal while pi is working on a long task �
 pi install git:github.com/<user>/pi-ntfy
 ```
 
-Or install from a local clone:
+Or from a local clone:
 
 ```bash
 pi install /path/to/pi-ntfy
 ```
 
-## Configuration
+## Quick start
 
-All configuration is via environment variables.
+After installation, run pi and configure via the `/ntfy` command:
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `PI_NTFY_TOPIC` | **Yes** | — | ntfy topic name. If unset or empty, the extension is silently disabled. |
-| `PI_NTFY_SERVER` | No | `https://ntfy.sh` | ntfy server URL. Trailing slashes are stripped. |
-| `PI_NTFY_MIN_SECONDS` | No | `10` | Minimum agent turn duration (seconds) to trigger a notification. Short turns mean you're likely still watching the screen, so notifications would be noisy. Invalid values (NaN, negative, empty) fall back to 10. |
-| `PI_NTFY_TIMEOUT` | No | `5000` | Fetch timeout in milliseconds. Prevents a slow ntfy server from blocking pi. Invalid values fall back to 5000; minimum is 1000. |
-
-### Quick setup
-
-```bash
-# Set your topic in shell profile
-export PI_NTFY_TOPIC=my_pi_alerts
-
-# Optional: use a self-hosted ntfy server
-export PI_NTFY_SERVER=https://ntfy.mycompany.com
+```
+/ntfy
 ```
 
-Then start pi normally — the extension is loaded via the package manifest (`extensions/` directory).
+This opens the settings UI where you can set:
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| Enabled | No | Master on/off switch |
+| Server | `https://ntfy.sh` | ntfy server URL (self‑hosted or cloud) |
+| Topic | _(required)_ | ntfy topic name; notifications are skipped while empty |
+| Min Seconds | 10 | Minimum agent turn duration (seconds) before sending a notification |
+| Timeout (ms) | 5000 | Fetch timeout; prevents a slow server from blocking pi |
+| Auth Type | none | `none`, `basic` (username + password), or `bearer` (token) |
+
+Settings are saved to `~/.pi/agent/ntfy.json` and take effect immediately — no restart needed.
+
+## Authentication
+
+### No authentication (default)
+
+```json
+{
+  "auth": { "type": "none" }
+}
+```
+
+### Basic auth (username + password)
+
+```json
+{
+  "auth": {
+    "type": "basic",
+    "username": "alice",
+    "password": "s3cret"
+  }
+}
+```
+
+Use the `/ntfy` command to set these without editing the JSON file directly.
+
+### Bearer token
+
+```json
+{
+  "auth": {
+    "type": "bearer",
+    "token": "tk_abc123..."
+  }
+}
+```
 
 ## Notification behavior
 
-- Sends a notification when `agent_end` fires **and** the turn lasted ≥ `PI_NTFY_MIN_SECONDS`
+- Sends a notification when `agent_end` fires **and** the turn lasted ≥ `minSeconds`
 - **Normal turn**: Priority 4, tags `computer`, title "Pi needs attention"
 - **Turn with errors**: Priority 5, tags `computer,warning`, title "Pi needs attention ⚠️"
 - Notification failures (network errors, timeouts, HTTP errors) are logged via `console.warn` — pi continues normally
-- Fetch requests have a bounded timeout (`PI_NTFY_TIMEOUT`) and respect `Ctrl+C` abort
-
-## Local testing
-
-```bash
-# Quick test with a single extension file
-PI_NTFY_TOPIC=test_topic pi -e extensions/ntfy.ts
-
-# Test with a self-hosted server
-PI_NTFY_SERVER=http://localhost:8080 PI_NTFY_TOPIC=test_topic pi -e extensions/ntfy.ts
-
-# Local ntfy server for testing
-docker run -p 8080:80 binwiederhier/ntfy
-```
+- Fetch requests have a bounded timeout (`timeoutMs`) and respect `Ctrl+C` abort
 
 ## Disable / Rollback
 
-- **Runtime disable**: `unset PI_NTFY_TOPIC` — the extension loads but does nothing
-- **Full uninstall**: `pi remove git:github.com/<user>/pi-ntfy` or delete `extensions/ntfy.ts`, `package.json`, `README.md`
+- **Disable**: Open `/ntfy` and toggle `Enabled` to `No` — notifications stop immediately
+- **Pause**: Set `Topic` to empty via `/ntfy` — same effect  
+- **Uninstall**: `pi remove git:github.com/<user>/pi-ntfy`
+- **Reset config**: Delete `~/.pi/agent/ntfy.json` — the extension loads defaults on next start
 
 ## License
 

@@ -12,11 +12,11 @@
 - **运行时**: Node.js >= 18
 - **包管理器**: `npm`
 - **核心依赖**：
-  - `@earendil-works/pi-coding-agent` — 扩展类型（ExtensionAPI, ExtensionContext, 事件等）
+  - `@earendil-works/pi-coding-agent` — 扩展类型（ExtensionAPI, ExtensionContext, Event, getAgentDir 等）
   - `typebox` — 工具参数 schema 定义（仅当需要注册工具时）
   - `@earendil-works/pi-ai` — 工具函数（仅当需要 `StringEnum`、`defineTool` 时）
 
-> 本项目当前仅订阅事件、不注册工具，所以实际只导入 `ExtensionAPI` 类型。`typebox` 和 `pi-ai` 列为 peerDependencies 以备后续扩展功能。
+> 本项目当前仅订阅事件、注册命令，不注册工具，所以实际只导入 `ExtensionAPI` 类型和 `getAgentDir` 函数。`typebox` 和 `pi-ai` 列为 peerDependencies 以备后续扩展功能。
 
 ## 3. 代码规范
 
@@ -29,7 +29,7 @@
 ### 命名约定
 - **文件/目录**: kebab-case（例如 `ntfy-notify.ts`）
 - **导出函数**: camelCase
-- **工具名**: snake_case（例如 `ntfy_notify`，LLM 侧调用名称）
+- **命令名**: 不含前缀 `/`（例如 `ntfy`）
 - **类型/接口**: PascalCase
 - **常量**: UPPER_SNAKE_CASE
 
@@ -37,17 +37,17 @@
 ```typescript
 // 类型导入使用 type 关键字
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-// 运行时导入按需引入
-import { defineTool } from "@earendil-works/pi-coding-agent";
-import { StringEnum } from "@earendil-works/pi-ai";
-import { Type } from "typebox";
+// 运行时按需引入
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 ```
 
 ### 扩展入口结构
 ```typescript
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 export default function extension(pi: ExtensionAPI) {
+  pi.registerCommand("ntfy", { ... });
   pi.on("session_start", async (_event, ctx) => { ... });
   pi.on("agent_start", async () => { ... });
   pi.on("agent_end", async (event, ctx) => { ... });
@@ -86,7 +86,7 @@ peerDependencies 使用 `"*"` 范围——这些包由 pi 运行时捆绑，扩�
 
 本项目为极简 pi 扩展（单文件、无 npm 运行时依赖），暂不设 build/test/lint scripts。
 
-- **本地测试**: `PI_NTFY_TOPIC=test_topic pi -e extensions/ntfy.ts`
+- **本地测试**: `pi -e extensions/ntfy.ts`
 - **类型检查**: 可后续添加 `tsc --noEmit` script
 - **测试框架**: Vitest（可后续添加）
 
@@ -102,44 +102,54 @@ peerDependencies 使用 `"*"` 范围——这些包由 pi 运行时捆绑，扩�
 
 示例：
 ```
-feat(ntfy): add error-aware priority escalation
+feat(ntfy): add file-based config and /ntfy command
+feat(ntfy): add Basic/Bearer auth support for self-hosted ntfy
 fix(ntfy): handle fetch timeout with AbortController
-docs: add usage examples to README
+docs: add auth examples to README
 ```
 
 ## 7. 扩展开发约定
 
-### 事件订阅（本项目实际使用）
-- `session_start` — 重置状态（防 /reload 残留）
-- `agent_start` — 记录开始时间
-- `agent_end` — 触发通知（核心场景）
+### 事件订阅
+- `session_start` — 重置状态（防 /reload 残留）、重新加载配置文件
+- `agent_start` — 记录开始时间（仅 isActive() 时）
+- `agent_end` — 触发通知（仅 isActive() 且 startedAt > 0 时）
 
 ### 配置方式
-- 全部通过环境变量（`PI_NTFY_TOPIC`、`PI_NTFY_SERVER`、`PI_NTFY_MIN_SECONDS`、`PI_NTFY_TIMEOUT`）
-- topic 为空 → 扩展静默禁用，不注册任何 handler
-- 数值变量使用 `parseEnvInt()` 安全解析（NaN/Infinity/负数/空值 → 降级到默认值）
+- 用户级配置文件：`~/.pi/agent/ntfy.json`（路径通过 `getAgentDir()` 获取）
+- 配置文件格式为 JSON，含 `enabled`、`server`、`topic`、`minSeconds`、`timeoutMs`、`auth` 字段
+- 不存在或损坏时使用内置默认值
+- `/ntfy` 命令通过 TUI 编辑配置并即时写入文件
+- 配置修改后通过 `loadConfig()` 立即反映到内存，无需 `/reload`
+- topic 为空或 `enabled === false` 时静默跳过通知
+
+### 认证支持
+- `none` — 无认证 header
+- `basic` — `Authorization: Basic <base64(user:pass)>`
+- `bearer` — `Authorization: Bearer <token>`
+- 缺少凭据时视为未配置认证（不发送 header）
 
 ### 状态管理
-- 使用模块级 `let` 变量（`startedAt`）跟踪运行时状态
+- 使用模块级 `let` 变量（`startedAt`、`runtimeCfg`）跟踪运行时状态
 - **不使用 `pi.appendEntry()` 持久化**（通知行为不需要跨 session 恢复）
 - `startedAt = 0` 作为 guard（0 = 无有效开始时间 → agent_end 跳过）
 - `session_start` 和 `agent_end` 结尾都重置 `startedAt`
 
 ### 通知发送
-- 使用 ntfy publish API：`POST {server}/{encodeURIComponent(topic)}`，headers 传 Title/Priority/Tags，body 传纯文本
-- `AbortController` + `setTimeout` 超时保护（默认 5s）
+- 使用 ntfy publish API：`POST {server}/{encodeURIComponent(topic)}`，headers 传 Title/Priority/Tags/Authorization，body 传纯文本
+- `AbortController` + `setTimeout` 超时保护（使用 runtimeCfg.timeoutMs）
 - 合并 `ctx.signal` 支持 Ctrl+C abort
 - `try-catch` 静默吞掉所有错误（通知失败不影响 pi）
 
 ## 8. 文件操作限制
-- 不在项目根目录之外写文件
+- `~/.pi/agent/ntfy.json` 是唯一写入的外部文件
 - 不修改 `.git/`、`node_modules/` 等内容
 
 ## 9. 使用方式
 
 本地测试：
 ```bash
-PI_NTFY_TOPIC=test_topic pi -e extensions/ntfy.ts
+pi -e extensions/ntfy.ts
 ```
 
 通过 `pi install` 安装后自动加载：
@@ -148,7 +158,7 @@ pi install /path/to/pi-ntfy
 pi   # 扩展自动加载，可使用 /reload 热重载
 ```
 
-`pi install` 安装：
+`pi install` 从远程安装：
 ```bash
 pi install git:github.com/<user>/pi-ntfy
 ```
