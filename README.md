@@ -82,6 +82,7 @@ Use the `/ntfy` command to set these without editing the JSON file directly.
   - `ID` — Session file basename without `.jsonl`, or `(ephemeral)` when no session file is active
   - `Duration` — Turn wall-clock time in seconds
   - `Status: errors detected` — Appended only when the turn contains at least one tool error
+  - `Summary` — Last assistant response of the turn, truncated to 500 characters; omitted when no assistant text exists
 - **Normal turn**: Priority 4, tags `computer`
 - **Turn with errors**: Priority 5, tags `computer,warning`
 - Notification failures (network errors, timeouts, HTTP errors) are logged via `console.warn` — pi continues normally

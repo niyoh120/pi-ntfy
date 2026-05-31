@@ -11,7 +11,14 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	renameSync,
+	writeFileSync,
+} from "node:fs";
 import { basename, dirname, join } from "node:path";
 
 // ---------------------------------------------------------------------------
@@ -45,6 +52,8 @@ const DEFAULT_CONFIG: NtfyConfig = {
 	auth: { type: "none" },
 };
 
+const SUMMARY_MAX_CHARS = 500;
+
 // ---------------------------------------------------------------------------
 // Config file path
 // ---------------------------------------------------------------------------
@@ -74,25 +83,41 @@ function parseStrictInt(raw: unknown, defaultVal: number, min: number): number {
 }
 
 function normalizeConfig(raw: unknown): NtfyConfig {
-	const root = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
-	const authRaw = (root.auth && typeof root.auth === "object" ? root.auth : {}) as Record<string, unknown>;
+	const root = (raw && typeof raw === "object" ? raw : {}) as Record<
+		string,
+		unknown
+	>;
+	const authRaw = (
+		root.auth && typeof root.auth === "object" ? root.auth : {}
+	) as Record<string, unknown>;
 
 	const authType: AuthType =
-		authRaw.type === "basic" ? "basic" : authRaw.type === "bearer" ? "bearer" : "none";
+		authRaw.type === "basic"
+			? "basic"
+			: authRaw.type === "bearer"
+				? "bearer"
+				: "none";
 
 	const auth: NtfyAuthConfig = {
 		type: authType,
-		username: typeof authRaw.username === "string" ? authRaw.username : undefined,
-		password: typeof authRaw.password === "string" ? authRaw.password : undefined,
+		username:
+			typeof authRaw.username === "string" ? authRaw.username : undefined,
+		password:
+			typeof authRaw.password === "string" ? authRaw.password : undefined,
 		token: typeof authRaw.token === "string" ? authRaw.token : undefined,
 	};
 
 	return {
-		enabled: typeof root.enabled === "boolean" ? root.enabled : DEFAULT_CONFIG.enabled,
+		enabled:
+			typeof root.enabled === "boolean" ? root.enabled : DEFAULT_CONFIG.enabled,
 		server: normalizeServer(root.server),
-		topic: typeof root.topic === "string" ? root.topic.trim() : DEFAULT_CONFIG.topic,
+		topic:
+			typeof root.topic === "string" ? root.topic.trim() : DEFAULT_CONFIG.topic,
 		minSeconds: parseStrictInt(root.minSeconds, DEFAULT_CONFIG.minSeconds, 1),
-		timeoutMs: Math.min(parseStrictInt(root.timeoutMs, DEFAULT_CONFIG.timeoutMs, 1000), 2_147_483_647),
+		timeoutMs: Math.min(
+			parseStrictInt(root.timeoutMs, DEFAULT_CONFIG.timeoutMs, 1000),
+			2_147_483_647,
+		),
 		auth,
 	};
 }
@@ -101,10 +126,13 @@ function normalizeServer(raw: unknown): string {
 	if (typeof raw !== "string" || !raw.trim()) return DEFAULT_CONFIG.server;
 	try {
 		const url = new URL(raw.trim());
-		if (url.protocol !== "http:" && url.protocol !== "https:") return DEFAULT_CONFIG.server;
+		if (url.protocol !== "http:" && url.protocol !== "https:")
+			return DEFAULT_CONFIG.server;
 		url.search = "";
 		url.hash = "";
-		return (url.origin + url.pathname).replace(/\/+$/, "") || DEFAULT_CONFIG.server;
+		return (
+			(url.origin + url.pathname).replace(/\/+$/, "") || DEFAULT_CONFIG.server
+		);
 	} catch {
 		return DEFAULT_CONFIG.server;
 	}
@@ -117,7 +145,9 @@ function readConfig(): NtfyConfig {
 		const raw = readFileSync(file, "utf-8");
 		return normalizeConfig(JSON.parse(raw));
 	} catch (err) {
-		console.warn(`pi-ntfy: failed to read config: ${err instanceof Error ? err.message : String(err)}`);
+		console.warn(
+			`pi-ntfy: failed to read config: ${err instanceof Error ? err.message : String(err)}`,
+		);
 		return { ...DEFAULT_CONFIG };
 	}
 }
@@ -128,12 +158,17 @@ function writeConfig(cfg: NtfyConfig): boolean {
 		const dir = dirname(file);
 		if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 		const tmpFile = `${file}.${process.pid}.tmp`;
-		writeFileSync(tmpFile, JSON.stringify(cfg, null, "\t") + "\n", { encoding: "utf-8", mode: 0o600 });
+		writeFileSync(tmpFile, JSON.stringify(cfg, null, "\t") + "\n", {
+			encoding: "utf-8",
+			mode: 0o600,
+		});
 		chmodSync(tmpFile, 0o600);
 		renameSync(tmpFile, file);
 		return true;
 	} catch (err) {
-		console.warn(`pi-ntfy: failed to write config: ${err instanceof Error ? err.message : String(err)}`);
+		console.warn(
+			`pi-ntfy: failed to write config: ${err instanceof Error ? err.message : String(err)}`,
+		);
 		return false;
 	}
 }
@@ -174,6 +209,53 @@ function isActive(): boolean {
 // Notification helper
 // ---------------------------------------------------------------------------
 
+interface MessageLike {
+	role?: string;
+	content?: unknown;
+}
+
+interface TextContentBlock {
+	type?: string;
+	text?: string;
+}
+
+function extractTextParts(content: unknown): string[] {
+	if (typeof content === "string") return [content];
+	if (!Array.isArray(content)) return [];
+
+	const parts: string[] = [];
+	for (const part of content) {
+		if (!part || typeof part !== "object") continue;
+		const block = part as TextContentBlock;
+		if (block.type === "text" && typeof block.text === "string") {
+			parts.push(block.text);
+		}
+	}
+	return parts;
+}
+
+function normalizeSummaryText(text: string): string | undefined {
+	const summary = text.replace(/\s+/g, " ").trim();
+	if (!summary) return undefined;
+	if (summary.length <= SUMMARY_MAX_CHARS) return summary;
+	return `${summary.slice(0, SUMMARY_MAX_CHARS - 1).trimEnd()}…`;
+}
+
+function extractTurnSummary(messages: readonly unknown[]): string | undefined {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const raw = messages[i];
+		if (!raw || typeof raw !== "object") continue;
+
+		const msg = raw as MessageLike;
+		if (msg.role !== "assistant") continue;
+
+		const text = extractTextParts(msg.content).join("\n");
+		const summary = normalizeSummaryText(text);
+		if (summary) return summary;
+	}
+	return undefined;
+}
+
 interface NotifyMeta {
 	projectPath: string;
 	projectName: string;
@@ -199,6 +281,7 @@ function buildNotifyMeta(
 interface NotifyParams {
 	seconds: number;
 	hasError: boolean;
+	summary?: string;
 	signal?: AbortSignal;
 	meta: NotifyMeta;
 }
@@ -219,6 +302,9 @@ async function sendNotification(params: NotifyParams): Promise<void> {
 	];
 	if (params.hasError) {
 		lines.push("Status: errors detected");
+	}
+	if (params.summary) {
+		lines.push(`Summary: ${params.summary}`);
 	}
 	const body = lines.join("\n");
 
@@ -300,7 +386,11 @@ function buildSettingItems(cfg: NtfyConfig): string[] {
 	return items;
 }
 
-async function handleSetting(ctx: SettingsUI, label: string, cfg: NtfyConfig): Promise<void> {
+async function handleSetting(
+	ctx: SettingsUI,
+	label: string,
+	cfg: NtfyConfig,
+): Promise<void> {
 	if (label.startsWith("Enabled:")) {
 		cfg.enabled = !cfg.enabled;
 	} else if (label.startsWith("Server:")) {
@@ -323,7 +413,10 @@ async function handleSetting(ctx: SettingsUI, label: string, cfg: NtfyConfig): P
 		const v = await ctx.ui.input("ntfy topic:", cfg.topic);
 		if (v !== undefined) cfg.topic = v.trim();
 	} else if (label.startsWith("Min Seconds:")) {
-		const v = await ctx.ui.input("Minimum seconds to trigger:", String(cfg.minSeconds));
+		const v = await ctx.ui.input(
+			"Minimum seconds to trigger:",
+			String(cfg.minSeconds),
+		);
 		if (v !== undefined) {
 			const n = Number(v);
 			if (Number.isFinite(n) && n >= 1) cfg.minSeconds = Math.floor(n);
@@ -332,7 +425,8 @@ async function handleSetting(ctx: SettingsUI, label: string, cfg: NtfyConfig): P
 		const v = await ctx.ui.input("Fetch timeout in ms:", String(cfg.timeoutMs));
 		if (v !== undefined) {
 			const n = Number(v);
-			if (Number.isFinite(n) && n >= 1000) cfg.timeoutMs = Math.min(Math.floor(n), 2_147_483_647);
+			if (Number.isFinite(n) && n >= 1000)
+				cfg.timeoutMs = Math.min(Math.floor(n), 2_147_483_647);
 		}
 	} else if (label.startsWith("Auth Type:")) {
 		const choice = await ctx.ui.select("Authentication type:", [
@@ -360,13 +454,19 @@ async function handleSetting(ctx: SettingsUI, label: string, cfg: NtfyConfig): P
 		const v = await ctx.ui.input("ntfy username:", cfg.auth.username ?? "");
 		if (v !== undefined) cfg.auth.username = v.trim() || undefined;
 	} else if (label.startsWith("Password:")) {
-		const v = await ctx.ui.input("ntfy password (leave blank to keep, '-' to clear):", "");
+		const v = await ctx.ui.input(
+			"ntfy password (leave blank to keep, '-' to clear):",
+			"",
+		);
 		if (v !== undefined) {
 			if (v === "-") cfg.auth.password = undefined;
 			else if (v !== "") cfg.auth.password = v;
 		}
 	} else if (label.startsWith("Token:")) {
-		const v = await ctx.ui.input("ntfy bearer token (leave blank to keep, '-' to clear):", "");
+		const v = await ctx.ui.input(
+			"ntfy bearer token (leave blank to keep, '-' to clear):",
+			"",
+		);
 		if (v !== undefined) {
 			if (v === "-") cfg.auth.token = undefined;
 			else if (v !== "") cfg.auth.token = v;
@@ -403,8 +503,14 @@ export default function extension(pi: ExtensionAPI) {
 						ctx.ui.notify("topic is required when ntfy is enabled", "warning");
 						continue;
 					}
-					if (cfg.auth.type === "basic" && (!cfg.auth.username || !cfg.auth.password)) {
-						ctx.ui.notify("basic auth requires both username and password", "warning");
+					if (
+						cfg.auth.type === "basic" &&
+						(!cfg.auth.username || !cfg.auth.password)
+					) {
+						ctx.ui.notify(
+							"basic auth requires both username and password",
+							"warning",
+						);
 						continue;
 					}
 					if (cfg.auth.type === "bearer" && !cfg.auth.token) {
@@ -463,7 +569,14 @@ export default function extension(pi: ExtensionAPI) {
 			ctx.sessionManager.getSessionFile() ?? undefined,
 			pi.getSessionName() ?? undefined,
 		);
+		const summary = extractTurnSummary(event.messages);
 
-		await sendNotification({ seconds, hasError, signal: ctx.signal, meta });
+		await sendNotification({
+			seconds,
+			hasError,
+			summary,
+			signal: ctx.signal,
+			meta,
+		});
 	});
 }
